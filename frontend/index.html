@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chunk File Upload with Resume</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    input[type="file"] {
+      margin: 10px 0;
+    }
+    progress {
+      width: 100%;
+      height: 20px;
+    }
+    .status {
+      margin-top: 10px;
+      color: #333;
+    }
+    .status.error {
+      color: red;
+    }
+    .status.success {
+      color: green;
+    }
+    #uploadBtn {
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Resumable File Upload (Pake je es doang a)</h1>
+    <input type="file" id="fileInput" />
+    <progress id="progressBar" value="0" max="100"></progress>
+    <button id="uploadBtn">Upload</button>
+    <div id="status" class="status">Select a file to upload.</div>
+  </div>
+
+  <script>
+    const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB cuy
+    const API_URL = 'http://localhost:3000/upload/chunk';
+    const MERGE_URL = 'http://localhost:3000/upload/merge';
+
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressBar = document.getElementById('progressBar');
+    const status = document.getElementById('status');
+
+    let fileKey = null;
+    let file = null;
+    let totalChunks = 0;
+    let uploadedChunks = [];
+    let currentChunkIndex = 0;
+    let isUploading = false;
+
+    fileInput.addEventListener('change', (event) => {
+      file = event.target.files[0];
+      if (file) {
+        status.textContent = `Selected file: ${file.name}`;
+        status.classList.remove('error');
+      } else {
+        status.textContent = 'No file selected.';
+        status.classList.add('error');
+      }
+    });
+
+    uploadBtn.addEventListener('click', async () => {
+      if (!file) {
+        alert('Please select a file.');
+        return;
+      }
+
+      if (!isUploading) {
+        status.textContent = 'Preparing upload...';
+        fileKey = `${file.size}-${file.lastModified}-${file.name}-chunk`;
+        totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        await fetchUploadedChunks();
+        currentChunkIndex = Math.max(...uploadedChunks, -1) + 1;
+      }
+
+      uploadBtn.textContent = 'Uploading...';
+      uploadBtn.disabled = true;
+      startUpload();
+    });
+
+    const fetchUploadedChunks = async () => {
+      try {
+        const response = await fetch(`${API_URL}/status?fileKey=${fileKey}`);
+        if (response.ok) {
+          const data = await response.json();
+          uploadedChunks = data.uploadedChunks || [];
+        }
+      } catch (error) {
+        console.error('Error fetching uploaded chunks:', error);
+        uploadedChunks = [];
+      }
+    }
+
+    const uploadChunk = async (chunkIndex) => {
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+
+      const formData = new FormData();
+      formData.append('file', chunk);
+      formData.append('fileKey', fileKey);
+      formData.append('chunkIndex', chunkIndex);
+
+      try {
+        await fetch(API_URL, {
+          method: 'POST',
+          body: formData,
+        });
+        uploadedChunks.push(chunkIndex);
+        progressBar.value = ((uploadedChunks.length / totalChunks) * 100).toFixed(2);
+        currentChunkIndex++;
+      } catch (error) {
+        console.error(`Error uploading chunk ${chunkIndex}:`, error);
+        throw new Error('Connection lost');
+      }
+    }
+
+    const mergeChunks = async () => {
+      try {
+        const mergeResponse = await fetch(MERGE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileKey }),
+        });
+
+        if (mergeResponse.ok) {
+          status.textContent = 'Upload complete!';
+          status.classList.remove('error');
+          status.classList.add('success');
+        } else {
+          throw new Error('Failed to merge chunks.');
+        }
+      } catch (error) {
+        console.error('Error merging file:', error);
+        status.textContent = 'Error merging file.';
+        status.classList.add('error');
+      }
+    }
+
+    const startUpload = async () => {
+      isUploading = true;
+      status.textContent = 'Uploading...';
+
+      while (currentChunkIndex < totalChunks) {
+        if (!navigator.onLine) {
+          status.textContent = 'Connection lost. Click resume to continue upload.';
+          status.classList.add('error');
+          uploadBtn.textContent = 'Resume Upload';
+          uploadBtn.disabled = false;
+          isUploading = false;
+          break;
+        }
+
+        try {
+          await uploadChunk(currentChunkIndex);
+        } catch (error) {
+          status.textContent = 'Connection lost. Click resume to continue upload.';
+          status.classList.add('error');
+          uploadBtn.textContent = 'Resume Upload';
+          uploadBtn.disabled = false;
+          isUploading = false;
+          break;
+        }
+      }
+
+      if (currentChunkIndex === totalChunks) {
+        await mergeChunks();
+        uploadBtn.textContent = 'Upload';
+        uploadBtn.disabled = false;
+      }
+    }
+
+    window.addEventListener('online', () => {
+      if (!isUploading && file) {
+        status.textContent = 'Reconnected. Click resume to continue upload.';
+        status.classList.remove('error');
+        uploadBtn.disabled = false;
+      }
+    });
+
+    window.addEventListener('offline', () => {
+      if (isUploading) {
+        status.textContent = 'Connection lost. Click resume to continue upload.';
+        status.classList.add('error');
+        uploadBtn.textContent = 'Resume Upload';
+        uploadBtn.disabled = false;
+        isUploading = false;
+      }
+    });
+  </script>
+</body>
+</html>
